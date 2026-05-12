@@ -1,0 +1,626 @@
+//@version=5
+indicator("MC-Predict HullMA v2", shorttitle="MC-Hull v2", overlay=true, max_bars_back=500, max_boxes_count=500, max_lines_count=20, max_labels_count=20)
+
+// ============================================================================
+// YARDIMCI FONKSÄ°YONLAR
+// ============================================================================
+
+f_clamp(_v, _min, _max) =>
+    math.max(_min, math.min(_max, _v))
+
+f_hull(_src, _len) =>
+    _half = int(math.max(1, math.round(_len / 2)))
+    _sqrt = int(math.max(1, math.round(math.sqrt(_len))))
+    _diff = 2.0 * ta.wma(_src, _half) - ta.wma(_src, _len)
+    ta.wma(_diff, _sqrt)
+
+f_dema(_src, _len) =>
+    _ema1 = ta.ema(_src, _len)
+    _ema2 = ta.ema(_ema1, _len)
+    2.0 * _ema1 - _ema2
+
+f_dema_macd(_src, _fastLen, _slowLen, _sigLen) =>
+    _fast = f_dema(_src, _fastLen)
+    _slow = f_dema(_src, _slowLen)
+    _line = _fast - _slow
+    _sig  = f_dema(_line, _sigLen)
+    _hist = _line - _sig
+    [_line, _sig, _hist]
+
+// [Ä°YÄ°LEÅžTÄ°RME 1] Z-Score Normalizasyonlu kNN
+f_knn_predict(_rsi, _macdHist, _bbPctB, _atr, _k, _lookback, _horizon, _rsi_z, _macd_z, _bb_z) =>
+    float _pred = 0.0
+    if bar_index > _lookback + _horizon + 10
+        _distances = array.new_float()
+        _votes = array.new_int()
+        _f1Now = _rsi_z
+        _f2Now = _macd_z
+        _f3Now = _bb_z
+        int _startIdx = int(math.max(10, _horizon))
+        for i = _startIdx to _lookback
+            _f1Past = nz(_rsi_z[i])
+            _f2Past = nz(_macd_z[i])
+            _f3Past = nz(_bb_z[i])
+            _dist = math.sqrt(math.pow(_f1Now - _f1Past, 2) + math.pow(_f2Now - _f2Past, 2) + math.pow(_f3Now - _f3Past, 2))
+            _futureRet = nz(close[i - _horizon]) - nz(close[i])
+            _vote = _futureRet > 0 ? 1 : -1
+            array.push(_distances, _dist)
+            array.push(_votes, _vote)
+        _sortedIdx = array.sort_indices(_distances)
+        _neighborCount = math.min(_k, array.size(_sortedIdx))
+        _sumVotes = 0.0
+        if _neighborCount > 0
+            for j = 0 to _neighborCount - 1
+                _idx = array.get(_sortedIdx, j)
+                _sumVotes += array.get(_votes, _idx)
+            _pred := (_sumVotes / _neighborCount) * 100.0
+    _pred
+
+score_to_signal(_val, _threshS, _threshW) =>
+    _val >= _threshS ? "GÃœÃ‡LÃœ AL" : _val >= _threshW ? "AL" : _val <= -_threshS ? "GÃœÃ‡LÃœ SAT" : _val <= -_threshW ? "SAT" : "NÃ–TR"
+
+score_to_color(_val) =>
+    _val > 50 ? color.new(#00E676, 0) : _val > 20 ? color.new(#69F0AE, 0) : _val > -20 ? color.new(#B0BEC5, 0) : _val > -50 ? color.new(#FF8A65, 0) : color.new(#FF1744, 0)
+
+row_bg(_val) =>
+    _val > 0 ? color.new(#1B5E20, 85) : _val < 0 ? color.new(#B71C1C, 85) : color.new(#37474F, 80)
+
+// ============================================================================
+// INPUTLAR
+// ============================================================================
+grp_hull      = "ðŸ”µ HullMA AyarlarÄ±"
+hull_period   = input.int(16, "HullMA Periyodu", minval=2, group=grp_hull)
+
+grp_trend     = "ðŸ“ˆ Trend AyarlarÄ±"
+ema_fast      = input.int(9, "EMA HÄ±zlÄ±", minval=2, group=grp_trend)
+ema_mid       = input.int(21, "EMA Orta", minval=5, group=grp_trend)
+ema_slow      = input.int(50, "EMA YavaÅŸ", minval=10, group=grp_trend)
+ema_trend     = input.int(200, "EMA Trend (Ana)", minval=50, group=grp_trend)
+st_factor     = input.float(3.0, "SuperTrend FaktÃ¶r", minval=1, step=0.1, group=grp_trend)
+st_period     = input.int(10, "SuperTrend Periyot", minval=1, group=grp_trend)
+
+grp_mom       = "âš¡ Momentum AyarlarÄ±"
+rsi_len       = input.int(14, "RSI Periyodu", minval=2, group=grp_mom)
+rsi_ob        = input.int(70, "RSI AÅŸÄ±rÄ± AlÄ±m", minval=50, group=grp_mom)
+rsi_os        = input.int(30, "RSI AÅŸÄ±rÄ± SatÄ±m", maxval=50, group=grp_mom)
+macd_fast     = input.int(12, "MACD HÄ±zlÄ±", minval=2, group=grp_mom)
+macd_slow     = input.int(26, "MACD YavaÅŸ", minval=5, group=grp_mom)
+macd_signal   = input.int(9, "MACD Sinyal", minval=2, group=grp_mom)
+stoch_k       = input.int(14, "Stochastic K", minval=2, group=grp_mom)
+stoch_d       = input.int(3, "Stochastic D", minval=1, group=grp_mom)
+stoch_smooth  = input.int(3, "Stochastic Smooth", minval=1, group=grp_mom)
+
+grp_vol       = "ðŸ“Š Volatilite AyarlarÄ±"
+bb_len        = input.int(20, "Bollinger Periyodu", minval=5, group=grp_vol)
+bb_mult       = input.float(2.0, "Bollinger Ã‡arpanÄ±", minval=0.5, step=0.1, group=grp_vol)
+atr_len       = input.int(14, "ATR Periyodu", minval=1, group=grp_vol)
+
+grp_volume    = "ðŸ“¦ Hacim AyarlarÄ±"
+vol_ma_len    = input.int(20, "Hacim MA Periyodu", minval=5, group=grp_volume)
+
+grp_ml        = "ðŸ¤– ML (kNN) AyarlarÄ±"
+knn_k         = input.int(5, "kNN k DeÄŸeri", minval=1, maxval=20, group=grp_ml)
+knn_lookback  = input.int(100, "kNN Geriye BakÄ±ÅŸ", minval=20, maxval=400, group=grp_ml)
+knn_horizon   = input.int(5, "kNN Gelecek Ufku", minval=2, maxval=20, group=grp_ml)
+
+grp_mtf       = "ðŸ• Multi-Timeframe"
+htf_tf        = input.timeframe("D", "Ãœst Zaman Dilimi", group=grp_mtf)
+
+grp_weight    = "âš–ï¸ Kategori AÄŸÄ±rlÄ±klarÄ±"
+w_trend       = input.float(25, "Trend AÄŸÄ±rlÄ±ÄŸÄ± (%)", minval=0, maxval=100, group=grp_weight)
+w_momentum    = input.float(20, "Momentum AÄŸÄ±rlÄ±ÄŸÄ± (%)", minval=0, maxval=100, group=grp_weight)
+w_volatility  = input.float(15, "Volatilite AÄŸÄ±rlÄ±ÄŸÄ± (%)", minval=0, maxval=100, group=grp_weight)
+w_volume      = input.float(15, "Hacim AÄŸÄ±rlÄ±ÄŸÄ± (%)", minval=0, maxval=100, group=grp_weight)
+w_sr          = input.float(10, "Destek/Dir. AÄŸÄ±rlÄ±ÄŸÄ± (%)", minval=0, maxval=100, group=grp_weight)
+w_ml          = input.float(10, "ML AÄŸÄ±rlÄ±ÄŸÄ± (%)", minval=0, maxval=100, group=grp_weight)
+w_mtf         = input.float(5, "MTF AÄŸÄ±rlÄ±ÄŸÄ± (%)", minval=0, maxval=100, group=grp_weight)
+
+grp_dema      = "ðŸ“Š MACD DEMA (Zero-Lag)"
+dema_fast_len = input.int(12, "DEMA HÄ±zlÄ±", minval=2, group=grp_dema)
+dema_slow_len = input.int(26, "DEMA YavaÅŸ", minval=5, group=grp_dema)
+dema_sig_len  = input.int(9, "Sinyal Periyodu", minval=2, group=grp_dema)
+
+grp_div       = "ðŸ” Divergence"
+div_lookback  = input.int(14, "Pivot Geriye BakÄ±ÅŸ", minval=5, maxval=30, group=grp_div)
+
+grp_pred      = "ðŸ”® Fiyat Tahmini"
+lr_short_len  = input.int(50, "KÄ±sa Vade Regresyon", minval=20, maxval=100, group=grp_pred)
+lr_long_len   = input.int(200, "Uzun Vade Regresyon", minval=50, maxval=400, group=grp_pred)
+show_pred_lines = input.bool(true, "Tahmin Ã‡izgileri", group=grp_pred)
+
+grp_signal    = "ðŸŽ¯ Sinyal AyarlarÄ±"
+strong_thresh = input.int(50, "GÃ¼Ã§lÃ¼ Sinyal EÅŸiÄŸi", minval=20, maxval=90, group=grp_signal)
+weak_thresh   = input.int(20, "ZayÄ±f Sinyal EÅŸiÄŸi", minval=5, maxval=50, group=grp_signal)
+use_atr_filter = input.bool(true, "ATR Filtresi Kullan", group=grp_signal)
+// [Ä°YÄ°LEÅžTÄ°RME 5] ADX Filtresi input
+adx_filter_len = input.int(14, "ADX Periyodu", minval=5, maxval=30, group=grp_signal)
+adx_threshold  = input.int(20, "ADX Trend EÅŸiÄŸi", minval=10, maxval=40, group=grp_signal)
+
+grp_blend     = "ðŸ§© BirleÅŸim AÄŸÄ±rlÄ±klarÄ±"
+w_mc_blend    = input.float(55, "MC-Predict Blend (%)", minval=0, maxval=100, group=grp_blend)
+w_dema_blend  = input.float(25, "DEMA MACD Blend (%)", minval=0, maxval=100, group=grp_blend)
+w_div_blend   = input.float(10, "Divergence Blend (%)", minval=0, maxval=100, group=grp_blend)
+w_htf_blend   = input.float(10, "HTF DEMA Blend (%)", minval=0, maxval=100, group=grp_blend)
+// ============================================================================
+// HULL MA
+// ============================================================================
+hull_now  = f_hull(close, hull_period)
+hull_prev = hull_now[1]
+hull_color = hull_now > hull_prev ? color.green : color.red
+plot(hull_now, "HullMA", color=hull_color, linewidth=2)
+hull_long  = hull_now > hull_prev and hull_now[1] <= hull_prev[1]
+hull_short = hull_now < hull_prev and hull_now[1] >= hull_prev[1]
+
+// ============================================================================
+// 1. TREND ANALÄ°ZÄ°
+// ============================================================================
+ema9   = ta.ema(close, ema_fast)
+ema21  = ta.ema(close, ema_mid)
+ema50  = ta.ema(close, ema_slow)
+ema200 = ta.ema(close, ema_trend)
+[st_line, st_dir] = ta.supertrend(st_factor, st_period)
+
+ema_bull = ema9 > ema21 and ema21 > ema50 and ema50 > ema200 ? 1.0 : 0.0
+ema_bear = ema9 < ema21 and ema21 < ema50 and ema50 < ema200 ? -1.0 : 0.0
+ema_alignment = ema_bull + ema_bear
+price_vs_ema200 = close > ema200 ? 1.0 : -1.0
+price_vs_ema50  = close > ema50 ? 1.0 : -1.0
+ema_golden = ta.crossover(ema50, ema200) ? 1.0 : 0.0
+ema_death  = ta.crossunder(ema50, ema200) ? -1.0 : 0.0
+ema_cross_signal = ema_golden + ema_death
+st_signal = st_dir == -1 ? 1.0 : -1.0
+
+trend_score = ema_alignment * 30 + price_vs_ema200 * 20 + price_vs_ema50 * 15 + ema_cross_signal * 15 + st_signal * 20
+trend_score := f_clamp(trend_score, -100, 100)
+
+// ============================================================================
+// 2. MOMENTUM ANALÄ°ZÄ°
+// ============================================================================
+rsi_val = ta.rsi(close, rsi_len)
+rsi_score = rsi_val > rsi_ob ? -((rsi_val - rsi_ob) / math.max(1.0, 100 - rsi_ob)) * 100 : rsi_val < rsi_os ? ((rsi_os - rsi_val) / math.max(1.0, rsi_os)) * 100 : ((rsi_val - 50) / 50) * 50
+
+[macd_line, signal_line, macd_hist] = ta.macd(close, macd_fast, macd_slow, macd_signal)
+macd_bull_cross = ta.crossover(macd_line, signal_line)
+macd_bear_cross = ta.crossunder(macd_line, signal_line)
+macd_score = macd_line > signal_line ? 50.0 : -50.0
+macd_score += macd_hist > macd_hist[1] ? 25.0 : -25.0
+macd_score := macd_bull_cross ? 100.0 : macd_bear_cross ? -100.0 : macd_score
+macd_score := f_clamp(macd_score, -100, 100)
+
+stoch_k_val = ta.sma(ta.stoch(close, high, low, stoch_k), stoch_smooth)
+stoch_d_val = ta.sma(stoch_k_val, stoch_d)
+stoch_score = stoch_k_val > 80 ? -(stoch_k_val - 80) / 20 * 100 : stoch_k_val < 20 ? (20 - stoch_k_val) / 20 * 100 : (stoch_k_val - 50) / 50 * 60
+stoch_cross_up = ta.crossover(stoch_k_val, stoch_d_val) and stoch_k_val < 30
+stoch_cross_dn = ta.crossunder(stoch_k_val, stoch_d_val) and stoch_k_val > 70
+stoch_score := stoch_cross_up ? 100.0 : stoch_cross_dn ? -100.0 : stoch_score
+stoch_score := f_clamp(stoch_score, -100, 100)
+
+momentum_score = rsi_score * 0.35 + macd_score * 0.40 + stoch_score * 0.25
+momentum_score := f_clamp(momentum_score, -100, 100)
+
+// ============================================================================
+// 3. VOLATÄ°LÄ°TE ANALÄ°ZÄ°
+// ============================================================================
+[bb_mid, bb_upper, bb_lower] = ta.bb(close, bb_len, bb_mult)
+bb_range = math.max(bb_upper - bb_lower, syminfo.mintick)
+bb_width = bb_mid != 0 ? (bb_upper - bb_lower) / bb_mid * 100 : 0.0
+bb_pct_b = (close - bb_lower) / bb_range
+atr_val = ta.atr(atr_len)
+
+bb_score = bb_pct_b > 1.0 ? -80.0 : bb_pct_b < 0.0 ? 80.0 : (bb_pct_b - 0.5) * 160.0
+volatility_score = f_clamp(bb_score, -100, 100)
+
+// ============================================================================
+// 4. HACÄ°M ANALÄ°ZÄ°
+// ============================================================================
+vol_ma = ta.sma(volume, vol_ma_len)
+vol_ratio = vol_ma > 0 ? volume / vol_ma : 1.0
+obv = ta.cum(close > close[1] ? volume : close < close[1] ? -volume : 0)
+obv_ma = ta.sma(obv, vol_ma_len)
+vwap_val = ta.vwap
+
+vol_confirm_bull = close > close[1] and vol_ratio > 1.2 ? 40.0 : 0.0
+vol_confirm_bear = close < close[1] and vol_ratio > 1.2 ? -40.0 : 0.0
+obv_trend = obv > obv_ma ? 30.0 : -30.0
+vwap_signal = close > vwap_val ? 30.0 : -30.0
+
+volume_score = vol_confirm_bull + vol_confirm_bear + obv_trend + vwap_signal
+volume_score := f_clamp(volume_score, -100, 100)
+
+// ============================================================================
+// 5. DESTEK / DÄ°RENÃ‡ ANALÄ°ZÄ°
+// ============================================================================
+pivot_high = ta.pivothigh(high, 10, 10)
+pivot_low  = ta.pivotlow(low, 10, 10)
+var float last_resistance = na
+var float last_support = na
+if not na(pivot_high)
+    last_resistance := pivot_high
+if not na(pivot_low)
+    last_support := pivot_low
+
+dist_to_resistance = na(last_resistance) ? 0.0 : (last_resistance - close) / close * 100
+dist_to_support = na(last_support) ? 0.0 : (close - last_support) / close * 100
+
+sr_score = na(last_resistance) or na(last_support) ? 0.0 : dist_to_resistance < 1.0 ? -60.0 : dist_to_support < 1.0 ? 60.0 : (dist_to_resistance - dist_to_support) / (dist_to_resistance + dist_to_support + 0.001) * 100
+sr_score := f_clamp(sr_score, -100, 100)
+
+// ============================================================================
+// 6. kNN - [Ä°YÄ°LEÅžTÄ°RME 1] Z-Score Normalizasyonu
+// ============================================================================
+rsi_mean = ta.sma(rsi_val, knn_lookback)
+rsi_std = ta.stdev(rsi_val, knn_lookback)
+rsi_z = rsi_std > 0 ? (rsi_val - rsi_mean) / rsi_std : 0.0
+
+macd_mean = ta.sma(macd_hist, knn_lookback)
+macd_std = ta.stdev(macd_hist, knn_lookback)
+macd_z = macd_std > 0 ? (macd_hist - macd_mean) / macd_std : 0.0
+
+bb_mean = ta.sma(bb_pct_b, knn_lookback)
+bb_std = ta.stdev(bb_pct_b, knn_lookback)
+bb_z = bb_std > 0 ? (bb_pct_b - bb_mean) / bb_std : 0.0
+
+// [Ä°YÄ°LEÅžTÄ°RME 2] Performans: kNN sadece son barda veya HullMA dÃ¶nÃ¼ÅŸlerinde hesaplanÄ±r
+var float knn_pred = 0.0
+if barstate.islast or hull_long or hull_short
+    knn_pred := f_knn_predict(rsi_val, macd_hist, bb_pct_b, atr_val, knn_k, knn_lookback, knn_horizon, rsi_z, macd_z, bb_z)
+
+ml_score = f_clamp(knn_pred, -100, 100)
+
+// ============================================================================
+// 7. MTF - [Ä°YÄ°LEÅžTÄ°RME 3] Tek request.security Ã§aÄŸrÄ±sÄ±
+// ============================================================================
+f_all_htf() =>
+    [d_macd, d_sig, d_hist] = f_dema_macd(close, dema_fast_len, dema_slow_len, dema_sig_len)
+    [ta.ema(close, ema_fast), ta.ema(close, ema_slow), ta.rsi(close, rsi_len), d_macd, d_sig, d_hist]
+
+[htf_ema_fast, htf_ema_slow, htf_rsi, htf_dema_macd, htf_dema_sig, htf_dema_hist] = request.security(syminfo.tickerid, htf_tf, f_all_htf(), barmerge.gaps_off, barmerge.lookahead_off)
+
+mtf_score = htf_ema_fast > htf_ema_slow ? 50.0 : -50.0
+mtf_score += htf_rsi > 50 ? 25.0 : -25.0
+mtf_score += close > htf_ema_slow ? 25.0 : -25.0
+mtf_score := f_clamp(mtf_score, -100, 100)
+
+// ============================================================================
+// 8. MACD DEMA (ZERO-LAG)
+// ============================================================================
+[dema_macd_line, dema_signal_line, dema_hist] = f_dema_macd(close, dema_fast_len, dema_slow_len, dema_sig_len)
+dema_bull_x = ta.crossover(dema_macd_line, dema_signal_line)
+dema_bear_x = ta.crossunder(dema_macd_line, dema_signal_line)
+
+dema_score = dema_macd_line > dema_signal_line ? 50.0 : -50.0
+dema_score += dema_hist > dema_hist[1] ? 25.0 : -25.0
+dema_score := dema_bull_x ? 100.0 : dema_bear_x ? -100.0 : dema_score
+dema_score := f_clamp(dema_score, -100, 100)
+
+htf_dema_bull = htf_dema_macd > htf_dema_sig
+htf_dema_score = htf_dema_bull ? 40.0 : -40.0
+
+// ============================================================================
+// 9. DIVERGENCE TESPÄ°TÄ°
+// ============================================================================
+price_ph = ta.pivothigh(close, div_lookback, div_lookback)
+price_pl = ta.pivotlow(close, div_lookback, div_lookback)
+macd_div_ph = ta.pivothigh(dema_macd_line, div_lookback, div_lookback)
+macd_div_pl = ta.pivotlow(dema_macd_line, div_lookback, div_lookback)
+
+var float pp_hi = na
+var float pm_hi = na
+var float pp_lo = na
+var float pm_lo = na
+
+bull_div = false
+if not na(price_pl) and not na(macd_div_pl)
+    if not na(pp_lo) and not na(pm_lo)
+        bull_div := price_pl < pp_lo and macd_div_pl > pm_lo
+    pp_lo := price_pl
+    pm_lo := macd_div_pl
+
+bear_div = false
+if not na(price_ph) and not na(macd_div_ph)
+    if not na(pp_hi) and not na(pm_hi)
+        bear_div := price_ph > pp_hi and macd_div_ph < pm_hi
+    pp_hi := price_ph
+    pm_hi := macd_div_ph
+
+div_score = bull_div ? 40.0 : bear_div ? -40.0 : 0.0
+
+// ============================================================================
+// 10. BÄ°RLEÅžÄ°K TAHMÄ°N SKORU
+// ============================================================================
+total_weight = w_trend + w_momentum + w_volatility + w_volume + w_sr + w_ml + w_mtf
+total_weight_safe = total_weight > 0 ? total_weight : 100.0
+
+mc_raw = (trend_score * w_trend + momentum_score * w_momentum + volatility_score * w_volatility + volume_score * w_volume + sr_score * w_sr + ml_score * w_ml + mtf_score * w_mtf) / total_weight_safe
+
+blend_total = w_mc_blend + w_dema_blend + w_div_blend + w_htf_blend
+blend_total_safe = blend_total > 0 ? blend_total : 100.0
+
+prediction_score = (mc_raw * w_mc_blend + dema_score * w_dema_blend + div_score * w_div_blend + htf_dema_score * w_htf_blend) / blend_total_safe
+prediction_score := f_clamp(prediction_score, -100, 100)
+smooth_score = ta.ema(prediction_score, 3)
+
+// ============================================================================
+// [Ä°YÄ°LEÅžTÄ°RME 5] ADX Filtresi - Yatay piyasada sahte sinyal engelleme
+// ============================================================================
+[diplus, diminus, adx_val] = ta.dmi(adx_filter_len, adx_filter_len)
+is_trending = adx_val > adx_threshold
+
+// ============================================================================
+// SÄ°NYAL ÃœRETÄ°MÄ° (ADX filtresi eklendi)
+// ============================================================================
+confidence = math.abs(smooth_score)
+high_confidence = confidence >= strong_thresh
+med_confidence  = confidence >= weak_thresh and confidence < strong_thresh
+atr_filter = not use_atr_filter or atr_val > ta.sma(atr_val, 20) * 0.5
+
+strong_buy  = smooth_score >= strong_thresh and smooth_score[1] < strong_thresh and atr_filter and is_trending
+strong_sell = smooth_score <= -strong_thresh and smooth_score[1] > -strong_thresh and atr_filter and is_trending
+// ============================================================================
+// GÃ–RSEL
+// ============================================================================
+plotshape(hull_long, title="Long", location=location.belowbar, style=shape.labelup, color=#2196F3, textcolor=color.white, text="Long", size=size.small)
+plotshape(hull_short, title="Short", location=location.abovebar, style=shape.labeldown, color=#FF9800, textcolor=color.white, text="Short", size=size.small)
+plotshape(strong_buy, title="GÃœÃ‡LÃœ AL", location=location.belowbar, style=shape.labelup, color=#4CAF50, textcolor=color.white, text="AL", size=size.normal)
+plotshape(strong_sell, title="GÃœÃ‡LÃœ SAT", location=location.abovebar, style=shape.labeldown, color=#F44336, textcolor=color.white, text="SAT", size=size.normal)
+
+// ============================================================================
+// FÄ°YAT TAHMÄ°NÄ°
+// ============================================================================
+lr_s = ta.linreg(close, lr_short_len, 0)
+slope_s = lr_s - ta.linreg(close, lr_short_len, 1)
+pred_2w = close + slope_s * 10 + close * (smooth_score / 100) * 0.03
+rng_2w = atr_val * math.sqrt(10)
+pred_2w_l = math.max(0, pred_2w - rng_2w)
+pred_2w_h = pred_2w + rng_2w
+chg_2w = close != 0 ? (pred_2w - close) / close * 100 : 0.0
+
+lr_l = ta.linreg(close, lr_long_len, 0)
+slope_l = lr_l - ta.linreg(close, lr_long_len, 1)
+pred_6m = close + slope_l * 126 + close * (smooth_score / 100) * 0.10
+rng_6m = atr_val * math.sqrt(126)
+pred_6m_l = math.max(0, pred_6m - rng_6m)
+pred_6m_h = pred_6m + rng_6m
+chg_6m = close != 0 ? (pred_6m - close) / close * 100 : 0.0
+
+var line ln2  = na
+var line ln2l = na
+var line ln2h = na
+var line ln6  = na
+var line ln6l = na
+var line ln6h = na
+var label lb2 = na
+var label lb6 = na
+
+if barstate.islast
+    if not na(ln2)
+        line.delete(ln2)
+    if not na(ln2l)
+        line.delete(ln2l)
+    if not na(ln2h)
+        line.delete(ln2h)
+    if not na(ln6)
+        line.delete(ln6)
+    if not na(ln6l)
+        line.delete(ln6l)
+    if not na(ln6h)
+        line.delete(ln6h)
+    if not na(lb2)
+        label.delete(lb2)
+    if not na(lb6)
+        label.delete(lb6)
+
+    if show_pred_lines
+        ln2  := line.new(bar_index, pred_2w,   bar_index + 10, pred_2w,   color=color.new(#2196F3, 20), style=line.style_dashed, width=2)
+        ln2l := line.new(bar_index, pred_2w_l, bar_index + 10, pred_2w_l, color=color.new(#2196F3, 70), style=line.style_dotted, width=1)
+        ln2h := line.new(bar_index, pred_2w_h, bar_index + 10, pred_2w_h, color=color.new(#2196F3, 70), style=line.style_dotted, width=1)
+        lb2  := label.new(bar_index + 11, pred_2w, "2H: " + str.tostring(pred_2w, format.mintick), style=label.style_label_left, color=color.new(#2196F3, 20), textcolor=color.white, size=size.small)
+        ln6  := line.new(bar_index, pred_6m,   bar_index + 30, pred_6m,   color=color.new(#FF9800, 20), style=line.style_dashed, width=2)
+        ln6l := line.new(bar_index, pred_6m_l, bar_index + 30, pred_6m_l, color=color.new(#FF9800, 70), style=line.style_dotted, width=1)
+        ln6h := line.new(bar_index, pred_6m_h, bar_index + 30, pred_6m_h, color=color.new(#FF9800, 70), style=line.style_dotted, width=1)
+        lb6  := label.new(bar_index + 31, pred_6m, "6A: " + str.tostring(pred_6m, format.mintick), style=label.style_label_left, color=color.new(#FF9800, 20), textcolor=color.white, size=size.small)
+
+// ============================================================================
+// DASHBOARD (ADX satÄ±rÄ± eklendi)
+// ============================================================================
+var table dash = table.new(position.top_right, 2, 23, bgcolor=color.new(#121212, 5), border_width=1, border_color=color.new(#333333, 30))
+
+if barstate.islast
+    table.cell(dash, 0, 0, "ðŸ“Š MC-PREDICT v2", text_color=#FFFFFF, text_size=size.normal, bgcolor=color.new(#0D47A1, 0), text_halign=text.align_center)
+    table.cell(dash, 1, 0, syminfo.ticker + " " + timeframe.period, text_color=#90CAF9, text_size=size.normal, bgcolor=color.new(#0D47A1, 0), text_halign=text.align_center)
+
+    sc = smooth_score
+    sc_col = score_to_color(sc)
+    table.cell(dash, 0, 1, "TAHMÄ°N", text_color=#B0BEC5, text_size=size.small, bgcolor=color.new(#1A237E, 20))
+    table.cell(dash, 1, 1, str.tostring(math.round(sc, 1)), text_color=sc_col, text_size=size.large, bgcolor=color.new(#1A237E, 20), text_halign=text.align_center)
+
+    sig_text = score_to_signal(sc, strong_thresh, weak_thresh)
+    sig_col = sc > 0 ? color.new(#00E676, 0) : sc < 0 ? color.new(#FF1744, 0) : color.new(#B0BEC5, 0)
+    table.cell(dash, 0, 2, "Sinyal", text_color=#B0BEC5, text_size=size.small, bgcolor=color.new(#1A237E, 40))
+    table.cell(dash, 1, 2, sig_text, text_color=sig_col, text_size=size.normal, bgcolor=color.new(#1A237E, 40), text_halign=text.align_center)
+
+    conf_text = high_confidence ? "ðŸ”´ YÃœKSEK" : med_confidence ? "ðŸŸ¡ ORTA" : "âšª DÃœÅžÃœK"
+    table.cell(dash, 0, 3, "GÃ¼ven", text_color=#B0BEC5, text_size=size.small)
+    table.cell(dash, 1, 3, conf_text, text_color=#FFFFFF, text_size=size.small, text_halign=text.align_center)
+
+    // [Ä°YÄ°LEÅžTÄ°RME 5] ADX durumu dashboard'a eklendi
+    adx_text = is_trending ? "TREND âœ“ (" + str.tostring(math.round(adx_val, 1)) + ")" : "YATAY âœ— (" + str.tostring(math.round(adx_val, 1)) + ")"
+    adx_col = is_trending ? color.new(#00E676, 0) : color.new(#FF9800, 0)
+    table.cell(dash, 0, 4, "ðŸ“¡ ADX", text_color=#B0BEC5, text_size=size.small)
+    table.cell(dash, 1, 4, adx_text, text_color=adx_col, text_size=size.small, text_halign=text.align_center)
+
+    table.cell(dash, 0, 5, "â”€â”€â”€ KATEGORÄ°", text_color=#546E7A, text_size=size.tiny, bgcolor=color.new(#263238, 50))
+    table.cell(dash, 1, 5, "SKOR", text_color=#546E7A, text_size=size.tiny, bgcolor=color.new(#263238, 50), text_halign=text.align_center)
+
+    table.cell(dash, 0, 6, "ðŸ”µ HullMA", text_color=#42A5F5, text_size=size.tiny, bgcolor=row_bg(hull_now > hull_prev ? 1 : -1))
+    table.cell(dash, 1, 6, hull_now > hull_prev ? "YukarÄ± â–²" : "AÅŸaÄŸÄ± â–¼", text_color=hull_now > hull_prev ? #00E676 : #FF1744, text_size=size.tiny, bgcolor=row_bg(hull_now > hull_prev ? 1 : -1), text_halign=text.align_center)
+
+    table.cell(dash, 0, 7, "ðŸ“ˆ Trend", text_color=#B0BEC5, text_size=size.tiny, bgcolor=row_bg(trend_score))
+    table.cell(dash, 1, 7, str.tostring(math.round(trend_score, 1)), text_color=score_to_color(trend_score), text_size=size.tiny, bgcolor=row_bg(trend_score), text_halign=text.align_center)
+
+    table.cell(dash, 0, 8, "âš¡ Momentum", text_color=#B0BEC5, text_size=size.tiny, bgcolor=row_bg(momentum_score))
+    table.cell(dash, 1, 8, str.tostring(math.round(momentum_score, 1)), text_color=score_to_color(momentum_score), text_size=size.tiny, bgcolor=row_bg(momentum_score), text_halign=text.align_center)
+
+    table.cell(dash, 0, 9, "ðŸ“Š Volatilite", text_color=#B0BEC5, text_size=size.tiny, bgcolor=row_bg(volatility_score))
+    table.cell(dash, 1, 9, str.tostring(math.round(volatility_score, 1)), text_color=score_to_color(volatility_score), text_size=size.tiny, bgcolor=row_bg(volatility_score), text_halign=text.align_center)
+
+    table.cell(dash, 0, 10, "ðŸ“¦ Hacim", text_color=#B0BEC5, text_size=size.tiny, bgcolor=row_bg(volume_score))
+    table.cell(dash, 1, 10, str.tostring(math.round(volume_score, 1)), text_color=score_to_color(volume_score), text_size=size.tiny, bgcolor=row_bg(volume_score), text_halign=text.align_center)
+
+    table.cell(dash, 0, 11, "ðŸŽ¯ S/R", text_color=#B0BEC5, text_size=size.tiny, bgcolor=row_bg(sr_score))
+    table.cell(dash, 1, 11, str.tostring(math.round(sr_score, 1)), text_color=score_to_color(sr_score), text_size=size.tiny, bgcolor=row_bg(sr_score), text_halign=text.align_center)
+
+    table.cell(dash, 0, 12, "ðŸ¤– ML(kNN)", text_color=#B0BEC5, text_size=size.tiny, bgcolor=row_bg(ml_score))
+    table.cell(dash, 1, 12, str.tostring(math.round(ml_score, 1)), text_color=score_to_color(ml_score), text_size=size.tiny, bgcolor=row_bg(ml_score), text_halign=text.align_center)
+
+    table.cell(dash, 0, 13, "ðŸ• MTF", text_color=#B0BEC5, text_size=size.tiny, bgcolor=row_bg(mtf_score))
+    table.cell(dash, 1, 13, str.tostring(math.round(mtf_score, 1)), text_color=score_to_color(mtf_score), text_size=size.tiny, bgcolor=row_bg(mtf_score), text_halign=text.align_center)
+
+    table.cell(dash, 0, 14, "ðŸ“‰ DEMA", text_color=#B0BEC5, text_size=size.tiny, bgcolor=row_bg(dema_score))
+    table.cell(dash, 1, 14, str.tostring(math.round(dema_score, 1)), text_color=score_to_color(dema_score), text_size=size.tiny, bgcolor=row_bg(dema_score), text_halign=text.align_center)
+
+    table.cell(dash, 0, 15, "ðŸ” Div", text_color=#B0BEC5, text_size=size.tiny, bgcolor=row_bg(div_score))
+    table.cell(dash, 1, 15, str.tostring(math.round(div_score, 1)), text_color=score_to_color(div_score), text_size=size.tiny, bgcolor=row_bg(div_score), text_halign=text.align_center)
+
+    table.cell(dash, 0, 16, "â”€â”€â”€ GÃ–STERGELER", text_color=#546E7A, text_size=size.tiny, bgcolor=color.new(#263238, 50))
+    table.cell(dash, 1, 16, "DEÄžER", text_color=#546E7A, text_size=size.tiny, bgcolor=color.new(#263238, 50), text_halign=text.align_center)
+
+    rsi_col = rsi_val > rsi_ob ? #FF1744 : rsi_val < rsi_os ? #00E676 : #B0BEC5
+    table.cell(dash, 0, 17, "RSI(" + str.tostring(rsi_len) + ")", text_color=#B0BEC5, text_size=size.tiny)
+    table.cell(dash, 1, 17, str.tostring(math.round(rsi_val, 1)), text_color=rsi_col, text_size=size.tiny, text_halign=text.align_center)
+
+    macd_col = macd_line > signal_line ? #00E676 : #FF1744
+    table.cell(dash, 0, 18, "MACD", text_color=#B0BEC5, text_size=size.tiny)
+    table.cell(dash, 1, 18, macd_line > signal_line ? "Bullish" : "Bearish", text_color=macd_col, text_size=size.tiny, text_halign=text.align_center)
+
+    table.cell(dash, 0, 19, "ATR(" + str.tostring(atr_len) + ")", text_color=#B0BEC5, text_size=size.tiny)
+    table.cell(dash, 1, 19, str.tostring(math.round(atr_val, 2)), text_color=#FFD54F, text_size=size.tiny, text_halign=text.align_center)
+
+    chg2_col = chg_2w > 0 ? #00E676 : #FF1744
+    table.cell(dash, 0, 20, "ðŸ”® 2 Hafta", text_color=#42A5F5, text_size=size.tiny, bgcolor=color.new(#0D47A1, 40))
+    table.cell(dash, 1, 20, str.tostring(pred_2w, format.mintick), text_color=chg2_col, text_size=size.small, bgcolor=color.new(#0D47A1, 40), text_halign=text.align_center)
+
+    chg6_col = chg_6m > 0 ? #00E676 : #FF1744
+    table.cell(dash, 0, 21, "ðŸ”® 6 Ay", text_color=#FFA726, text_size=size.tiny, bgcolor=color.new(#E65100, 40))
+    table.cell(dash, 1, 21, str.tostring(pred_6m, format.mintick), text_color=chg6_col, text_size=size.small, bgcolor=color.new(#E65100, 40), text_halign=text.align_center)
+
+    // [Ä°YÄ°LEÅžTÄ°RME 4] Strategy dÃ¶nÃ¼ÅŸÃ¼m notu
+    table.cell(dash, 0, 22, "ðŸ’¡ Backtest", text_color=#546E7A, text_size=size.tiny, bgcolor=color.new(#263238, 70))
+    table.cell(dash, 1, 22, "indicatorâ†’strategy", text_color=#546E7A, text_size=size.tiny, bgcolor=color.new(#263238, 70), text_halign=text.align_center)
+
+// ============================================================================
+// 12. ENDÜSTRİ STANDARDI AUTO FIBONACCI EXTENSION (ZigZag Algoritması)
+// ============================================================================
+
+grp_fib = "📐 Auto Fib Extension (ZigZag)"
+show_fib = input.bool(true, "Fibonacci Çiz", group=grp_fib)
+fib_depth = input.int(10, "ZigZag Derinliği (Pivot Gücü)", minval=2, maxval=50, group=grp_fib)
+
+// Özelleştirilebilir Renkler ve Boyama
+col_fib_abc  = input.color(color.new(#FFFFFF, 20), "A-B-C Trend Çizgileri", group=grp_fib)
+col_fib_0    = input.color(color.new(#787B86, 0), "Fib 0 (Başlangıç)", group=grp_fib)
+col_fib_100  = input.color(color.new(#FFCA28, 0), "Fib 1.000", group=grp_fib)
+col_fib_161  = input.color(color.new(#FF7043, 0), "Fib 1.618", group=grp_fib)
+col_fib_261  = input.color(color.new(#EF5350, 0), "Fib 2.618", group=grp_fib)
+fill_bg      = input.bool(true, "Arka Planı Boya", group=grp_fib)
+fill_transp  = input.int(85, "Boyama Şeffaflığı", minval=0, maxval=100, group=grp_fib)
+
+// 1. Basit Pivotları Bul
+ph = ta.pivothigh(high, fib_depth, fib_depth)
+pl = ta.pivotlow(low, fib_depth, fib_depth)
+
+// 2. Hafıza Dizileri (Sadece geçerli Zikzak noktaları tutulur)
+var float[] zz_points = array.new_float(0)
+var int[]   zz_bars   = array.new_int(0)
+var int[]   zz_types  = array.new_int(0) // 1 = Tepe (High), -1 = Dip (Low)
+
+var float last_zz_val  = na
+var int   last_zz_type = 0
+
+// 3. Zikzak Filtreleme Motoru (Sahte/Arka arkaya gelen tepeleri eler)
+if not na(ph)
+    if last_zz_type == 1
+        if ph > last_zz_val
+            last_zz_val := ph
+            array.set(zz_points, array.size(zz_points)-1, ph)
+            array.set(zz_bars,   array.size(zz_bars)-1,   bar_index - fib_depth)
+    else
+        array.push(zz_points, ph)
+        array.push(zz_bars,   bar_index - fib_depth)
+        array.push(zz_types,  1)
+        last_zz_type := 1
+        last_zz_val  := ph
+
+if not na(pl)
+    if last_zz_type == -1
+        if pl < last_zz_val
+            last_zz_val := pl
+            array.set(zz_points, array.size(zz_points)-1, pl)
+            array.set(zz_bars,   array.size(zz_bars)-1,   bar_index - fib_depth)
+    else
+        array.push(zz_points, pl)
+        array.push(zz_bars,   bar_index - fib_depth)
+        array.push(zz_types,  -1)
+        last_zz_type := -1
+        last_zz_val  := pl
+
+// 4. Çizim Aşaması (Son barda çalışır)
+var line l_0 = na, var line l_100 = na, var line l_161 = na, var line l_261 = na
+var label lb_0 = na, var label lb_100 = na, var label lb_161 = na, var label lb_261 = na
+var line l_trend = na, var line l_pullback = na
+var linefill lf_1 = na, var linefill lf_2 = na, var linefill lf_3 = na
+
+if show_fib and barstate.islast and array.size(zz_points) >= 3
+    int size = array.size(zz_points)
+    
+    float pt_C = array.get(zz_points, size - 1)
+    int  bar_C = array.get(zz_bars,   size - 1)
+    int type_C = array.get(zz_types,  size - 1)
+    
+    float pt_B = array.get(zz_points, size - 2)
+    int  bar_B = array.get(zz_bars,   size - 2)
+    
+    float pt_A = array.get(zz_points, size - 3)
+    int  bar_A = array.get(zz_bars,   size - 3)
+
+    // Temizleme
+    line.delete(l_0), line.delete(l_100), line.delete(l_161), line.delete(l_261)
+    label.delete(lb_0), label.delete(lb_100), label.delete(lb_161), label.delete(lb_261)
+    line.delete(l_trend), line.delete(l_pullback)
+    linefill.delete(lf_1), linefill.delete(lf_2), linefill.delete(lf_3)
+    
+    // Daha Görünür A-B-C Çizgileri
+    l_trend    := line.new(bar_A, pt_A, bar_B, pt_B, color=col_fib_abc, style=line.style_dashed, width=2)
+    l_pullback := line.new(bar_B, pt_B, bar_C, pt_C, color=col_fib_abc, style=line.style_dashed, width=2)
+
+    float dist = math.abs(pt_B - pt_A)
+    float ext_100 = type_C == -1 ? pt_C + (dist * 1.000) : pt_C - (dist * 1.000)
+    float ext_161 = type_C == -1 ? pt_C + (dist * 1.618) : pt_C - (dist * 1.618)
+    float ext_261 = type_C == -1 ? pt_C + (dist * 2.618) : pt_C - (dist * 2.618)
+        
+    // Yatay Çizgiler
+    int end_bar = bar_index + 40
+    l_0   := line.new(bar_C, pt_C, end_bar, pt_C, color=col_fib_0, style=line.style_solid, width=1)
+    l_100 := line.new(bar_C, ext_100, end_bar, ext_100, color=col_fib_100, style=line.style_solid, width=2)
+    l_161 := line.new(bar_C, ext_161, end_bar, ext_161, color=col_fib_161, style=line.style_solid, width=2)
+    l_261 := line.new(bar_C, ext_261, end_bar, ext_261, color=col_fib_261, style=line.style_solid, width=2)
+    
+    // Etiketler
+    lb_0   := label.new(end_bar + 2, pt_C, "0.0",   style=label.style_none, textcolor=col_fib_0, size=size.small)
+    lb_100 := label.new(end_bar + 2, ext_100, "1.0",   style=label.style_none, textcolor=col_fib_100, size=size.small)
+    lb_161 := label.new(end_bar + 2, ext_161, "1.618", style=label.style_none, textcolor=col_fib_161, size=size.small)
+    lb_261 := label.new(end_bar + 2, ext_261, "2.618", style=label.style_none, textcolor=col_fib_261, size=size.small)
+
+    // Arka Plan Boyamaları (Native TradingView Görünümü)
+    if fill_bg
+        lf_1 := linefill.new(l_0, l_100, color=color.new(col_fib_100, fill_transp))
+        lf_2 := linefill.new(l_100, l_161, color=color.new(col_fib_161, fill_transp))
+        lf_3 := linefill.new(l_161, l_261, color=color.new(col_fib_261, fill_transp))
+
+// ============================================================================
+// ALERT KOŞULLARI
+// ============================================================================
+alertcondition(strong_buy, title="AL Sinyali", message="🟢 AL — {{ticker}} | {{interval}}")
+alertcondition(strong_sell, title="SAT Sinyali", message="🔴 SAT — {{ticker}} | {{interval}}")
+alertcondition(hull_long, title="HullMA Long", message="🔵 HullMA Long — {{ticker}} | {{interval}}")
+alertcondition(hull_short, title="HullMA Short", message="🟠 HullMA Short — {{ticker}} | {{interval}}")

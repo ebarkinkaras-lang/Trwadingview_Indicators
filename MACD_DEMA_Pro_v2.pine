@@ -1,0 +1,273 @@
+// This Pine Script™ source code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © Enhanced MACD DEMA — Zero Lag + Divergence + Entry Point + Pahalılık
+// Orijinal: ToFFF MACD DEMA — Geliştirilmiş versiyon
+
+//@version=5
+indicator("MACD DEMA Pro", shorttitle="MACD-DEMA-Pro", overlay=false)
+
+// ============================================================================
+// AYARLAR
+// ============================================================================
+
+grp_macd     = "📊 MACD DEMA Ayarları"
+sma_len      = input.int(12,    "DEMA Hızlı",           minval=2,  group=grp_macd)
+lma_len      = input.int(26,    "DEMA Yavaş",           minval=5,  group=grp_macd)
+tsp_len      = input.int(9,     "Sinyal Periyodu",      minval=2,  group=grp_macd)
+show_lines   = input.bool(true, "MACD/Sinyal Çizgileri",group=grp_macd)
+
+grp_div      = "🔍 Divergence Ayarları"
+show_div     = input.bool(true, "Divergence Göster",    group=grp_div)
+div_lookback = input.int(14,    "Pivot Geriye Bakış",   minval=5, maxval=30, group=grp_div)
+
+grp_mtf      = "🕐 Multi-Timeframe"
+use_mtf      = input.bool(false,"MTF Onay Kullan",      group=grp_mtf)
+htf_tf       = input.timeframe("D", "Üst Zaman Dilimi", group=grp_mtf)
+
+grp_entry    = "🎯 Giriş Noktası Ayarları"
+entry_ema    = input.int(200,   "Uzun Vade EMA",        minval=50, group=grp_entry)
+entry_rsi    = input.int(14,    "RSI Periyodu",         minval=2,  group=grp_entry)
+entry_bb_len = input.int(20,    "Bollinger Periyodu",   minval=5,  group=grp_entry)
+entry_bb_mult= input.float(2.0, "Bollinger Çarpanı",   minval=0.5,step=0.1, group=grp_entry)
+week52_len   = input.int(252,   "52 Hafta Periyodu",    minval=100,group=grp_entry)
+
+// ============================================================================
+// MACD DEMA HESAPLAMASI (Zero-Lag)
+// ============================================================================
+
+MMEslowa = ta.ema(close, lma_len)
+MMEslowb = ta.ema(MMEslowa, lma_len)
+DEMAslow = 2 * MMEslowa - MMEslowb
+
+MMEfasta = ta.ema(close, sma_len)
+MMEfastb = ta.ema(MMEfasta, sma_len)
+DEMAfast = 2 * MMEfasta - MMEfastb
+
+macd_line = DEMAfast - DEMAslow
+
+MMEsignala = ta.ema(macd_line, tsp_len)
+MMEsignalb = ta.ema(MMEsignala, tsp_len)
+signal_line = 2 * MMEsignala - MMEsignalb
+
+histogram = macd_line - signal_line
+
+// ============================================================================
+// EK GÖSTERGELER (Giriş Noktası + Pahalılık için)
+// ============================================================================
+
+rsi_val  = ta.rsi(close, entry_rsi)
+ema200   = ta.ema(close, entry_ema)
+[bb_mid, bb_upper, bb_lower] = ta.bb(close, entry_bb_len, entry_bb_mult)
+bb_pct_b = (close - bb_lower) / (bb_upper - bb_lower)
+
+high_52w = ta.highest(high, week52_len)
+low_52w  = ta.lowest(low, week52_len)
+price_position_52w = (close - low_52w) / (high_52w - low_52w + 0.0001)
+
+// ============================================================================
+// HİSTOGRAM RENKLENDİRME
+// ============================================================================
+
+hist_rising  = histogram > histogram[1]
+hist_falling = histogram < histogram[1]
+
+hist_color = histogram > 0 and hist_rising ? color.new(#26A69A, 0) : histogram > 0 and hist_falling ? color.new(#B2DFDB, 0) : histogram < 0 and hist_falling ? color.new(#EF5350, 0) : histogram < 0 and hist_rising ? color.new(#FFCDD2, 0) : color.new(#78909C, 50)
+
+// ============================================================================
+// CROSSOVER SİNYALLERİ
+// ============================================================================
+
+bull_cross = ta.crossover(macd_line, signal_line)
+bear_cross = ta.crossunder(macd_line, signal_line)
+
+zero_cross_up   = ta.crossover(macd_line, 0)
+zero_cross_down = ta.crossunder(macd_line, 0)
+
+// ============================================================================
+// DIVERGENCE TESPİTİ
+// ============================================================================
+
+price_ph = ta.pivothigh(close, div_lookback, div_lookback)
+price_pl = ta.pivotlow(close, div_lookback, div_lookback)
+macd_ph  = ta.pivothigh(macd_line, div_lookback, div_lookback)
+macd_pl  = ta.pivotlow(macd_line, div_lookback, div_lookback)
+
+var float prev_price_high = na
+var float prev_macd_high  = na
+var float prev_price_low  = na
+var float prev_macd_low   = na
+var int prev_ph_bar = na
+var int prev_pl_bar = na
+
+bull_div = false
+if not na(price_pl) and not na(macd_pl)
+    if not na(prev_price_low) and not na(prev_macd_low)
+        if price_pl < prev_price_low and macd_pl > prev_macd_low
+            bull_div := true
+    prev_price_low := price_pl
+    prev_macd_low  := macd_pl
+    prev_pl_bar    := bar_index - div_lookback
+
+bear_div = false
+if not na(price_ph) and not na(macd_ph)
+    if not na(prev_price_high) and not na(prev_macd_high)
+        if price_ph > prev_price_high and macd_ph < prev_macd_high
+            bear_div := true
+    prev_price_high := price_ph
+    prev_macd_high  := macd_ph
+    prev_ph_bar     := bar_index - div_lookback
+
+// ============================================================================
+// MULTİ-TIMEFRAME ONAY
+// ============================================================================
+
+htf_macd_line = request.security(syminfo.tickerid, htf_tf, macd_line, barmerge.gaps_off, barmerge.lookahead_off)
+htf_signal    = request.security(syminfo.tickerid, htf_tf, signal_line, barmerge.gaps_off, barmerge.lookahead_off)
+htf_bull      = htf_macd_line > htf_signal
+htf_bear      = htf_macd_line < htf_signal
+
+confirmed_bull = bull_cross and (not use_mtf or htf_bull)
+confirmed_bear = bear_cross and (not use_mtf or htf_bear)
+
+// ============================================================================
+// UZUN VADELİ GİRİŞ NOKTASI KALİTESİ (5 kriter → 3 sinyal)
+// ============================================================================
+
+// Kriter 1: MACD bullish (çizgi sinyalin üstünde veya cross)
+cond_macd = macd_line > signal_line or bull_cross ? 1 : 0
+
+// Kriter 2: RSI aşırı satımda veya nötr bölgede (< 45 = ucuz)
+cond_rsi = rsi_val < 45 ? 1 : 0
+
+// Kriter 3: Fiyat EMA200 altında veya yakınında (uzun vade ucuz)
+dist_ema200 = (close - ema200) / ema200 * 100
+cond_ema = dist_ema200 < 3.0 ? 1 : 0
+
+// Kriter 4: Histogram momentum artıyor
+cond_momentum = hist_rising ? 1 : 0
+
+// Kriter 5: Fiyat 52 haftalık aralığın alt yarısında
+cond_52w = price_position_52w < 0.5 ? 1 : 0
+
+entry_score = cond_macd + cond_rsi + cond_ema + cond_momentum + cond_52w
+
+// 3 seviyeli sinyal
+entry_text = entry_score >= 4 ? "🟢 MÜKEMMEL" : entry_score >= 2 ? "🟡 İYİ" : "🔴 ZAYIF"
+entry_detail = str.tostring(entry_score) + "/5 kriter"
+
+// ============================================================================
+// PAHALILIK SKORU (1-5 arası, 5 = en pahalı)
+// ============================================================================
+
+// Ana bileşen: 52 haftalık (1 yıl) pozisyon — ağırlık %40
+expensive_52w = price_position_52w * 2.0
+
+// Yardımcı: RSI (0-100 → 0-1 puan)
+expensive_rsi = rsi_val / 100.0
+
+// Yardımcı: Fiyat vs EMA200 mesafesi
+expensive_ema = dist_ema200 > 0 ? math.min(dist_ema200 / 20.0, 1.0) : 0.0
+
+// Yardımcı: Bollinger %B
+expensive_bb = math.min(math.max(bb_pct_b, 0), 1.0)
+
+// Toplam (0-5 arası, 52w ağırlıklı)
+raw_expensive = expensive_52w + expensive_rsi + expensive_ema + expensive_bb
+expensive_score = math.round(math.max(1, math.min(5, raw_expensive)))
+
+expensive_text = expensive_score == 5 ? "💰💰💰💰💰" : expensive_score == 4 ? "💰💰💰💰" : expensive_score == 3 ? "💰💰💰" : expensive_score == 2 ? "💰💰" : "💰"
+expensive_label = expensive_score >= 4 ? "Pahalı" : expensive_score >= 3 ? "Normal" : "Ucuz"
+
+// ============================================================================
+// GÖRSEL ÇIKTILAR
+// ============================================================================
+
+plot(histogram, "Histogram", color=hist_color, style=plot.style_columns, histbase=0)
+
+p1 = plot(show_lines ? macd_line : na, "MACD", color=color.new(#2962FF, 0), linewidth=2)
+p2 = plot(show_lines ? signal_line : na, "Sinyal", color=color.new(#FF6D00, 0), linewidth=1)
+fill(p1, p2, color=macd_line > signal_line ? color.new(#2962FF, 85) : color.new(#FF6D00, 85), title="MACD Dolgu")
+
+hline(0, "Sıfır", color=color.new(#787B86, 50), linestyle=hline.style_dashed)
+
+plotshape(confirmed_bull, title="Bullish Cross", location=location.bottom, style=shape.triangleup, color=#26A69A, size=size.small)
+plotshape(confirmed_bear, title="Bearish Cross", location=location.top, style=shape.triangledown, color=#EF5350, size=size.small)
+
+plotshape(show_div and bull_div, title="Bullish Divergence", location=location.bottom, style=shape.labelup, color=#00BCD4, textcolor=color.white, text="Bull\nDiv", size=size.small)
+plotshape(show_div and bear_div, title="Bearish Divergence", location=location.top, style=shape.labeldown, color=#FF5722, textcolor=color.white, text="Bear\nDiv", size=size.small)
+
+plotshape(zero_cross_up, title="Sıfır Üstüne", location=location.bottom, style=shape.diamond, color=#4CAF50, size=size.tiny)
+plotshape(zero_cross_down, title="Sıfır Altına", location=location.top, style=shape.diamond, color=#F44336, size=size.tiny)
+
+// ============================================================================
+// BİLGİ TABLOSU
+// ============================================================================
+
+var table info = table.new(position.top_right, 2, 11, bgcolor=color.new(#1E1E1E, 10), border_width=1, border_color=color.new(#424242, 50))
+
+if barstate.islast
+    table.cell(info, 0, 0, "📊 MACD DEMA Pro", text_color=#FFFFFF, text_size=size.normal, bgcolor=color.new(#1565C0, 0), text_halign=text.align_center)
+    table.cell(info, 1, 0, syminfo.ticker,       bgcolor=color.new(#1565C0, 0), text_color=#90CAF9, text_size=size.normal, text_halign=text.align_center)
+
+    // MACD Sinyal
+    macd_sig = macd_line > signal_line ? "🟢 Bullish" : "🔴 Bearish"
+    macd_col = macd_line > signal_line ? #26A69A : #EF5350
+    table.cell(info, 0, 1, "MACD",               text_color=#B0BEC5, text_size=size.small)
+    table.cell(info, 1, 1, macd_sig,             text_color=macd_col, text_size=size.small)
+
+    // Trend
+    trend_text = macd_line > signal_line and histogram > 0 ? "🟢 Güçlü Yükseliş" : macd_line > signal_line ? "🟡 Yükseliş" : macd_line < signal_line and histogram < 0 ? "🔴 Güçlü Düşüş" : "🟠 Düşüş"
+    table.cell(info, 0, 2, "Trend",              text_color=#B0BEC5, text_size=size.small)
+    table.cell(info, 1, 2, trend_text,            text_color=#FFFFFF, text_size=size.small)
+
+    // Momentum
+    mom_text = hist_rising ? "⬆️ Artıyor" : "⬇️ Azalıyor"
+    table.cell(info, 0, 3, "Momentum",           text_color=#B0BEC5, text_size=size.small)
+    table.cell(info, 1, 3, mom_text,              text_color=hist_rising ? #4CAF50 : #F44336, text_size=size.small)
+
+    // MTF Onay
+    mtf_text = htf_bull ? "🟢 Boğa (Trend)" : htf_bear ? "🔴 Ayı (Trend)" : "⚪ Kararsız"
+    mtf_col = htf_bull ? #4CAF50 : htf_bear ? #F44336 : #78909C
+    table.cell(info, 0, 4, "MTF Onay (" + htf_tf + ")", text_color=#B0BEC5, text_size=size.small, bgcolor=color.new(#1A237E, 30))
+    table.cell(info, 1, 4, mtf_text,              text_color=mtf_col, text_size=size.small, bgcolor=color.new(#1A237E, 30))
+
+    // Crossover
+    cross_text = bull_cross ? "🟢 AL Sinyali!" : bear_cross ? "🔴 SAT Sinyali!" : "— Bekleniyor"
+    cross_col = bull_cross ? #00E676 : bear_cross ? #FF1744 : #546E7A
+    table.cell(info, 0, 5, "Crossover",          text_color=#B0BEC5, text_size=size.small)
+    table.cell(info, 1, 5, cross_text,            text_color=cross_col, text_size=size.small)
+
+    // Divergence
+    div_text = bull_div ? "💎 Bullish Div!" : bear_div ? "⚠️ Bearish Div!" : "— Yok"
+    div_col = bull_div ? #00BCD4 : bear_div ? #FF5722 : #546E7A
+    table.cell(info, 0, 6, "Divergence",         text_color=#B0BEC5, text_size=size.small)
+    table.cell(info, 1, 6, div_text,              text_color=div_col, text_size=size.small)
+
+    // === GİRİŞ NOKTASI KALİTESİ ===
+    entry_col = entry_score >= 4 ? #00E676 : entry_score >= 2 ? #FFD54F : #FF1744
+    table.cell(info, 0, 7, "🎯 Giriş Noktası",  text_color=#B0BEC5, text_size=size.small, bgcolor=color.new(#0D47A1, 30))
+    table.cell(info, 1, 7, entry_text,            text_color=entry_col, text_size=size.small, bgcolor=color.new(#0D47A1, 30))
+
+    // Giriş detay
+    table.cell(info, 0, 8, "Kriter",             text_color=#78909C, text_size=size.tiny)
+    table.cell(info, 1, 8, entry_detail,          text_color=#B0BEC5, text_size=size.tiny)
+
+    // === PAHALILIK SKORU ===
+    exp_col = expensive_score >= 4 ? #FF1744 : expensive_score >= 3 ? #FFD54F : #00E676
+    table.cell(info, 0, 9, "💰 Son 1 Yıl",       text_color=#B0BEC5, text_size=size.small, bgcolor=color.new(#4A148C, 30))
+    table.cell(info, 1, 9, expensive_text,        text_color=exp_col, text_size=size.small, bgcolor=color.new(#4A148C, 30))
+
+    // Pahalılık detay
+    table.cell(info, 0, 10, str.tostring(expensive_score) + "/5", text_color=#78909C, text_size=size.tiny)
+    table.cell(info, 1, 10, expensive_label,       text_color=exp_col, text_size=size.tiny)
+
+// ============================================================================
+// ALERT KOŞULLARI
+// ============================================================================
+
+alertcondition(confirmed_bull, title="Bullish Crossover", message="🟢 MACD DEMA Bullish Crossover | {{ticker}} | {{interval}}")
+alertcondition(confirmed_bear, title="Bearish Crossover", message="🔴 MACD DEMA Bearish Crossover | {{ticker}} | {{interval}}")
+alertcondition(bull_div,       title="Bullish Divergence", message="💎 Bullish Divergence Tespit! | {{ticker}} | {{interval}}")
+alertcondition(bear_div,       title="Bearish Divergence", message="⚠️ Bearish Divergence Tespit! | {{ticker}} | {{interval}}")
+alertcondition(zero_cross_up,  title="Sıfır Üstüne Geçiş", message="⬆️ MACD sıfır çizgisini yukarı geçti | {{ticker}} | {{interval}}")
+alertcondition(zero_cross_down,title="Sıfır Altına Geçiş", message="⬇️ MACD sıfır çizgisini aşağı geçti | {{ticker}} | {{interval}}")
+alertcondition(entry_score >= 4, title="Mükemmel Giriş Noktası", message="🎯 Mükemmel uzun vade giriş noktası! | {{ticker}} | {{interval}}")
