@@ -6,7 +6,7 @@
 
 > 🇹🇷 Türkçe | [🇬🇧 English](#-english) | [🇩🇪 Deutsch](#-deutsch)
 
-Bu repository,  TradingView analizleri için geliştirilmiş iki güçlü yapay zeka ve algoritmik ticaret göstergesini içerir.
+Bu repository,  TradingView analizleri için geliştirilmiş iki  yapay zeka gömülü ve algoritmik ticaret göstergesini içerir.
 
 > ⚠️ **Sorumluluk Reddi:** Bu proje kazanç garantisi vermez. Yalnızca piyasa tahminine yardımcı olmak amacıyla üretilmiş bir yardımcı araçtır. Yatırım tavsiyesi değildir.
 
@@ -52,7 +52,7 @@ Geleneksel MACD'nin "gecikme" (lag) sorununu ortadan kaldırmak için DEMA (Doub
 
 ## 🇬🇧 English
 
-This repository contains two powerful AI and algorithmic trading indicators developed for professional TradingView analysis.
+This repository contains two AI embedded and algorithmic trading indicators developed for  TradingView analysis.
 
 > ⚠️ **Disclaimer:** This project does not guarantee gains. It is produced solely as a helping tool for market prediction. Not investment advice.
 
@@ -91,7 +91,7 @@ A professional oscillator written from scratch using DEMA (Double Exponential Mo
 
 ## 🇩🇪 Deutsch
 
-Dieses Repository enthält zwei leistungsstarke KI- und algorithmische Handelsindikatoren für professionelle TradingView-Analysen.
+Dieses Repository enthält zwei  KI-implementierte- und algorithmische Handelsindikatoren für  TradingView-Analysen.
 
 > ⚠️ **Haftungsausschluss:** Dieses Projekt übernimmt keine Garantie für Gewinne. Es wurde ausschließlich als Hilfsmittel zur Marktvorhersage entwickelt. Keine Anlageberatung.
 
