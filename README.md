@@ -6,7 +6,7 @@
 
 > 🇹🇷 Türkçe | [🇬🇧 English](#-english) | [🇩🇪 Deutsch](#-deutsch)
 
-Bu repository, profesyonel TradingView analizleri için geliştirilmiş iki güçlü yapay zeka ve algoritmik ticaret göstergesini içerir.
+Bu repository,  TradingView analizleri için geliştirilmiş iki güçlü yapay zeka ve algoritmik ticaret göstergesini içerir.
 
 > ⚠️ **Sorumluluk Reddi:** Bu proje kazanç garantisi vermez. Yalnızca piyasa tahminine yardımcı olmak amacıyla üretilmiş bir yardımcı araçtır. Yatırım tavsiyesi değildir.
 
